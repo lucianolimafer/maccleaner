@@ -11,12 +11,15 @@ and pull requests.
 2. Add or update tests for behavior changes.
 3. Run `swift test` before committing.
 4. Commit each completed implementation unit separately.
-5. Use imperative, descriptive commit messages.
+5. Use Conventional Commits with an imperative, descriptive summary.
 
 Examples:
 
-- `Add safe cache cleanup validation`
-- `Extract storage scanning service`
-- `Improve dashboard empty states`
+- `feat(cleanup): add safe cache validation`
+- `refactor(scanner): extract storage service`
+- `fix(dashboard): improve empty states`
 
 Avoid mixing unrelated refactors and product changes in the same commit.
+
+Do not include assistant attribution, AI co-author trailers, generated-by notices,
+prompt text, conversation logs, or tool-specific metadata in repository content.
