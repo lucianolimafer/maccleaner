@@ -4,12 +4,20 @@ import SwiftUI
 
 struct ContentView: View {
     @Bindable var model: CleanerViewModel
-    @State private var selection: Destination = .smartScan
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var navigationHighlight
+    @State private var selection: AppDestination = .smartScan
+    @State private var navigationDirection: NavigationDirection = .none
 
     var body: some View {
         HStack(spacing: 0) {
             sidebar.frame(width: 238)
-            detail
+            ZStack {
+                detail
+                    .id(selection)
+                    .transition(detailTransition)
+            }
+            .clipped()
         }
         .background(Palette.canvas)
         .preferredColorScheme(.dark)
@@ -52,11 +60,11 @@ struct ContentView: View {
         .overlay(alignment: .trailing) { Rectangle().fill(Color.white.opacity(0.035)).frame(width: 1) }
     }
 
-    private func navigationSection(_ title: String, _ items: [Destination]) -> some View {
+    private func navigationSection(_ title: String, _ items: [AppDestination]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).sectionLabel().padding(.horizontal, 23).padding(.top, 6).padding(.bottom, 4)
             ForEach(items) { item in
-                Button { selection = item } label: {
+                Button { select(item) } label: {
                     HStack(spacing: 13) {
                         Image(systemName: item.icon).frame(width: 18)
                         Text(item.title).font(.system(size: 13, weight: selection == item ? .semibold : .regular))
@@ -64,7 +72,17 @@ struct ContentView: View {
                     }
                     .foregroundStyle(selection == item ? .white : Palette.secondary)
                     .padding(.horizontal, 13).frame(height: 36)
-                    .background(selection == item ? AnyShapeStyle(Palette.gradient) : AnyShapeStyle(Color.clear), in: RoundedRectangle(cornerRadius: 9))
+                    .background {
+                        if selection == item {
+                            if reduceMotion {
+                                RoundedRectangle(cornerRadius: 9).fill(Palette.gradient)
+                            } else {
+                                RoundedRectangle(cornerRadius: 9)
+                                    .fill(Palette.gradient)
+                                    .matchedGeometryEffect(id: "navigation-highlight", in: navigationHighlight)
+                            }
+                        }
+                    }
                     .padding(.horizontal, 12)
                 }
                 .buttonStyle(.plain)
@@ -86,24 +104,15 @@ struct ContentView: View {
     private var smartScan: some View {
         page(title: "Smart Scan", subtitle: "Review storage usage and find cache items that can be removed.") {
             VStack(spacing: 24) {
-                ZStack {
-                    Circle().fill(RadialGradient(colors: [Palette.primary.opacity(0.32), .clear], center: .center, startRadius: 10, endRadius: 220)).frame(width: 440, height: 360)
-                    ForEach([250.0, 310.0, 370.0], id: \.self) { width in
-                        Ellipse().stroke(Palette.primary.opacity(0.18), lineWidth: 1).frame(width: width, height: width * 0.48)
-                            .rotationEffect(.degrees(width == 310 ? -26 : width == 370 ? 28 : 0))
-                    }
-                    Circle().fill(Color(hex: 0x0B0D19)).frame(width: 164, height: 164)
-                        .overlay(Circle().stroke(Palette.primary.opacity(0.18)))
-                        .overlay {
-                            VStack(spacing: 10) {
-                                Image(systemName: "internaldrive.fill").font(.system(size: 42)).foregroundStyle(Palette.primary)
-                                Text(model.isScanning ? "SCANNING" : "READY").font(.system(size: 10, weight: .bold, design: .monospaced))
-                            }
-                        }
-                }
-                .frame(height: 330)
+                ScanOrbitVisual(
+                    state: scanVisualState,
+                    cleanableBytes: model.snapshot.cacheBytes,
+                    largeFileCount: model.snapshot.largeFiles.count,
+                    motionPolicy: motionPolicy
+                )
+                .frame(maxWidth: .infinity, minHeight: 330, maxHeight: 330)
                 VStack(spacing: 6) {
-                    Text(model.isScanning ? "Scanning your Mac…" : scanHeadline).font(.system(size: 28, weight: .semibold, design: .rounded))
+                    Text(scanVisualState.headline).font(.system(size: 28, weight: .semibold, design: .rounded))
                     Text(scanSummary).font(.system(size: 14, weight: .medium)).foregroundStyle(Palette.secondary)
                 }
                 primaryButton(model.isScanning ? "Scanning" : "Scan Mac", icon: model.isScanning ? "hourglass" : "play.fill") { model.scan() }
@@ -314,14 +323,37 @@ struct ContentView: View {
         })
     }
 
-    private var scanHeadline: String {
-        guard model.lastScannedAt != nil else { return "Ready to scan" }
-        return model.cleanupCandidates.isEmpty ? "Scan complete" : "Cleanup items found"
+    private var scanVisualState: ScanVisualState {
+        ScanVisualState(
+            isScanning: model.isScanning,
+            hasScanned: model.lastScannedAt != nil,
+            cleanupItemCount: model.cleanupCandidates.count,
+            cleanableBytes: model.snapshot.cacheBytes
+        )
     }
 
     private var scanSummary: String {
         guard model.lastScannedAt != nil else { return "Scan storage usage, cache folders, and large files." }
         return "\(model.cleanupCandidates.count) cache items · \(format(model.snapshot.cacheBytes)) potentially cleanable"
+    }
+
+    private var detailTransition: AnyTransition {
+        guard motionPolicy.animatesTabTransitions else { return .opacity }
+        let offset = motionPolicy.tabTransitionDistance * navigationDirection.horizontalSign
+        return .asymmetric(
+            insertion: .offset(x: offset).combined(with: .opacity),
+            removal: .offset(x: -offset).combined(with: .opacity)
+        )
+    }
+
+    private var motionPolicy: MotionPolicy { MotionPolicy(reduceMotion: reduceMotion) }
+
+    private func select(_ destination: AppDestination) {
+        guard destination != selection else { return }
+        navigationDirection = motionPolicy.tabTransitionDirection(from: selection, to: destination)
+        withAnimation(reduceMotion ? .easeOut(duration: 0.16) : .snappy(duration: 0.34, extraBounce: 0.04)) {
+            selection = destination
+        }
     }
 
     private var alertBinding: Binding<Bool> { Binding(get: { model.alertMessage != nil }, set: { if !$0 { model.alertMessage = nil } }) }
@@ -333,20 +365,132 @@ struct ContentView: View {
     private func openSystemSettings(_ address: String) { if let url = URL(string: address) { NSWorkspace.shared.open(url) } }
 }
 
-private enum Destination: String, Identifiable {
-    case smartScan, cleanup, storage, startupItems, uninstaller
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .smartScan: "Smart Scan"; case .cleanup: "Cleanup"; case .storage: "Storage"
-        case .startupItems: "Startup Items"; case .uninstaller: "Uninstaller"
+private struct ScanOrbitVisual: View {
+    let state: ScanVisualState
+    let cleanableBytes: Int64
+    let largeFileCount: Int
+    let motionPolicy: MotionPolicy
+
+    private var isScanning: Bool { state == .scanning }
+
+    var body: some View {
+        TimelineView(.animation(
+            minimumInterval: isScanning ? 1.0 / 30.0 : 1.0 / 12.0,
+            paused: !motionPolicy.animatesOrbits
+        )) { timeline in
+            let seconds = motionPolicy.animatesOrbits ? timeline.date.timeIntervalSinceReferenceDate : 0
+            let phase = seconds * (isScanning ? 1.0 : 0.18)
+
+            GeometryReader { proxy in
+                let center = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
+                ZStack {
+                    Circle()
+                        .fill(RadialGradient(
+                            colors: [Palette.primary.opacity(isScanning ? 0.34 : 0.22), .clear],
+                            center: .center,
+                            startRadius: 14,
+                            endRadius: 210
+                        ))
+                        .frame(width: 440, height: 340)
+                        .scaleEffect(motionPolicy.animatesScanPulse ? 1 + sin(phase * 2.2) * (isScanning ? 0.035 : 0.012) : 1)
+
+                    orbit(width: 238, height: 126, rotation: phase * 16)
+                    orbit(width: 304, height: 150, rotation: -26 - phase * 10)
+                    orbit(width: 368, height: 176, rotation: 28 + phase * 7)
+                    orbit(width: 330, height: 248, rotation: 78 - phase * 5, dashed: true)
+
+                    orbitParticle(center: center, width: 238, height: 126, angle: phase * 1.8, rotation: phase * 16)
+                    orbitParticle(center: center, width: 304, height: 150, angle: phase * -1.25 + 2.2, rotation: -26 - phase * 10)
+                    orbitParticle(center: center, width: 368, height: 176, angle: phase * 0.85 + 4.1, rotation: 28 + phase * 7)
+
+                    scanCore(phase: phase)
+
+                    orbitBadge(
+                        icon: "paintbrush.fill",
+                        label: "CACHE ITEMS",
+                        value: ByteCountFormatter.string(fromByteCount: cleanableBytes, countStyle: .file)
+                    )
+                    .position(x: center.x - 142, y: center.y + 108)
+
+                    orbitBadge(
+                        icon: "doc.fill",
+                        label: "LARGE FILES",
+                        value: "\(largeFileCount) found"
+                    )
+                    .position(x: center.x + 148, y: center.y - 102)
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+            }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(state.headline)
+        .accessibilityValue("\(largeFileCount) large files and \(ByteCountFormatter.string(fromByteCount: cleanableBytes, countStyle: .file)) in cache items")
     }
-    var icon: String {
-        switch self {
-        case .smartScan: "scope"; case .cleanup: "paintbrush"; case .storage: "internaldrive"
-        case .startupItems: "paperplane"; case .uninstaller: "rectangle.3.group"
+
+    private func orbit(width: CGFloat, height: CGFloat, rotation: Double, dashed: Bool = false) -> some View {
+        Ellipse()
+            .stroke(
+                Palette.primary.opacity(dashed ? 0.13 : 0.22),
+                style: StrokeStyle(lineWidth: 1, dash: dashed ? [3, 8] : [])
+            )
+            .frame(width: width, height: height)
+            .rotationEffect(.degrees(rotation))
+    }
+
+    private func orbitParticle(center: CGPoint, width: CGFloat, height: CGFloat, angle: Double, rotation: Double) -> some View {
+        let point = pointOnEllipse(center: center, width: width, height: height, angle: angle, rotation: rotation)
+        return Circle()
+            .fill(Color.white)
+            .frame(width: isScanning ? 7 : 5, height: isScanning ? 7 : 5)
+            .shadow(color: Palette.primary, radius: isScanning ? 8 : 4)
+            .position(point)
+    }
+
+    private func pointOnEllipse(center: CGPoint, width: CGFloat, height: CGFloat, angle: Double, rotation: Double) -> CGPoint {
+        let x = cos(angle) * width / 2
+        let y = sin(angle) * height / 2
+        let radians = rotation * .pi / 180
+        return CGPoint(
+            x: center.x + x * cos(radians) - y * sin(radians),
+            y: center.y + x * sin(radians) + y * cos(radians)
+        )
+    }
+
+    private func scanCore(phase: Double) -> some View {
+        ZStack {
+            Circle()
+                .fill(Color(hex: 0x090B17))
+                .shadow(color: Palette.primary.opacity(isScanning ? 0.35 : 0.16), radius: isScanning ? 26 : 14)
+            Circle().stroke(Palette.primary.opacity(0.28), lineWidth: 1)
+            Circle()
+                .trim(from: 0.06, to: isScanning ? 0.62 : 0.28)
+                .stroke(Palette.gradient, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(motionPolicy.animatesOrbits ? phase * 110 - 90 : -90))
+            VStack(spacing: 10) {
+                Image(systemName: isScanning ? "magnifyingglass" : "internaldrive.fill")
+                    .font(.system(size: 39, weight: .medium))
+                    .foregroundStyle(Palette.primary)
+                    .symbolEffect(.pulse, options: .repeating, isActive: isScanning && motionPolicy.animatesScanPulse)
+                Text(state.statusLabel)
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .tracking(1.2)
+            }
         }
+        .frame(width: 154, height: 154)
+        .scaleEffect(motionPolicy.animatesScanPulse ? 1 + sin(phase * 2.6) * (isScanning ? 0.025 : 0.006) : 1)
+    }
+
+    private func orbitBadge(icon: String, label: String, value: String) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: icon).foregroundStyle(Palette.primary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label).font(.system(size: 9, weight: .semibold, design: .monospaced)).foregroundStyle(Palette.muted)
+                Text(value).font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundStyle(Palette.text)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(Palette.panel.opacity(0.94), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Palette.border))
     }
 }
 
