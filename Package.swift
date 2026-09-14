@@ -19,6 +19,11 @@ let package = Package(
             name: "MacCleanerCoreTests",
             dependencies: ["MacCleanerCore"],
             path: "Tests/MacCleanerCoreTests"
+        ),
+        .testTarget(
+            name: "MacCleanerTests",
+            dependencies: ["MacCleaner", "MacCleanerCore"],
+            path: "Tests/MacCleanerTests"
         )
     ]
 )

@@ -7,11 +7,19 @@ import Observation
 final class CleanerViewModel {
     private let scanner: any StorageScanning
     private let trashService: any Trashing
+    private let startupItemDiscovery: any StartupItemDiscovering
+    private let applicationInventory: any ApplicationInventoryProviding
+    private let applicationTrashService: any ApplicationTrashing
 
     private(set) var snapshot = DiskSnapshot()
     private(set) var cleanupCandidates: [CleanupItem] = []
     private(set) var isScanning = false
     private(set) var lastScannedAt: Date?
+    private(set) var startupItems: [StartupItem] = []
+    private(set) var installedApplications: [InstalledApplication] = []
+    private(set) var isLoadingStartupItems = false
+    private(set) var isLoadingApplications = false
+    private(set) var applicationPendingRemoval: InstalledApplication?
     var selectedIDs = Set<CleanupItem.ID>()
     var alertMessage: String?
 
@@ -19,9 +27,18 @@ final class CleanerViewModel {
         cleanupCandidates.filter { selectedIDs.contains($0.id) }.reduce(0) { $0 + $1.bytes }
     }
 
-    init(scanner: any StorageScanning = StorageScanner(), trashService: any Trashing = TrashService()) {
+    init(
+        scanner: any StorageScanning = StorageScanner(),
+        trashService: any Trashing = TrashService(),
+        startupItemDiscovery: any StartupItemDiscovering = StartupItemDiscoveryService(),
+        applicationInventory: any ApplicationInventoryProviding = ApplicationInventoryService(),
+        applicationTrashService: any ApplicationTrashing = ApplicationTrashService()
+    ) {
         self.scanner = scanner
         self.trashService = trashService
+        self.startupItemDiscovery = startupItemDiscovery
+        self.applicationInventory = applicationInventory
+        self.applicationTrashService = applicationTrashService
     }
 
     func scan() {
@@ -50,6 +67,56 @@ final class CleanerViewModel {
                 try await trashService.moveToTrash(selected.map(\.url))
                 selectedIDs.removeAll()
                 scan()
+            } catch {
+                alertMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func loadStartupItems() {
+        guard !isLoadingStartupItems else { return }
+        isLoadingStartupItems = true
+        alertMessage = nil
+        Task {
+            defer { isLoadingStartupItems = false }
+            do {
+                startupItems = try await startupItemDiscovery.discover()
+            } catch {
+                alertMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func loadApplications() {
+        guard !isLoadingApplications else { return }
+        isLoadingApplications = true
+        alertMessage = nil
+        Task {
+            defer { isLoadingApplications = false }
+            do {
+                installedApplications = try await applicationInventory.applications()
+            } catch {
+                alertMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func requestRemoval(of application: InstalledApplication) {
+        guard installedApplications.contains(application) else { return }
+        applicationPendingRemoval = application
+    }
+
+    func cancelRemoval() {
+        applicationPendingRemoval = nil
+    }
+
+    func confirmRemoval() {
+        guard let application = applicationPendingRemoval else { return }
+        applicationPendingRemoval = nil
+        Task {
+            do {
+                try await applicationTrashService.moveToTrash(application.url)
+                loadApplications()
             } catch {
                 alertMessage = error.localizedDescription
             }
