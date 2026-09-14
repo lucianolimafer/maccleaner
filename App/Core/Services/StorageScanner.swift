@@ -11,7 +11,7 @@ public actor StorageScanner: StorageScanning {
         largeFileThreshold: Int64 = 500_000_000
     ) {
         self.fileManager = fileManager
-        self.homeDirectory = homeDirectory
+        self.homeDirectory = homeDirectory.standardizedFileURL.resolvingSymlinksInPath()
         self.largeFileThreshold = largeFileThreshold
     }
 
@@ -60,7 +60,7 @@ public actor StorageScanner: StorageScanning {
 
         var result: [CleanupItem] = []
         for case let url as URL in enumerator {
-            if url.deletingLastPathComponent() == directory, excluded.contains(url.lastPathComponent) {
+            if enumerator.level == 1, excluded.contains(url.lastPathComponent) {
                 enumerator.skipDescendants()
                 continue
             }
